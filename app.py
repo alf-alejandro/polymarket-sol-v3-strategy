@@ -209,13 +209,28 @@ async def strategy_loop():
             market_info["down_price"] = round(1 - ob["vwap_mid"], 4)
             obi_window.append(ob["obi"])
 
+            # ── Realistic bid/ask depth (used by algo AND display) ────────────
+            # UP token: BUY at best_ask (walk asks), SELL at best_bid (walk bids)
+            # DOWN token prices are the complement of the UP book.
+            up_ask = ob["best_ask"]
+            up_bid = ob["best_bid"]
+            book_valid = up_ask > 0.005 and up_bid > 0.005 and up_ask > up_bid
+            down_ask = round(1 - up_bid, 4) if book_valid else None
+            down_bid = round(1 - up_ask, 4) if book_valid else None
+            top_asks_up = ob.get("top_asks", [])   # ascending  (best ask first)
+            top_bids_up = ob.get("top_bids", [])   # descending (best bid first)
+            # DOWN asks = complement of UP bids (ascending ✓)
+            down_asks_lv = [(round(1 - p, 4), s) for p, s in top_bids_up] if book_valid else []
+            # DOWN bids  = complement of UP asks (descending ✓)
+            down_bids_lv = [(round(1 - p, 4), s) for p, s in top_asks_up] if book_valid else []
+
             # ── Signal ────────────────────────────────────────────────────────
             signal = compute_signal(ob["obi"], list(obi_window), OBI_THRESHOLD)
 
             # ── Simulation ────────────────────────────────────────────────────
             secs_left = seconds_remaining(market_info)
 
-            # v2: smart exits — check every snapshot while a trade is open
+            # v2: smart exits — use depth-walked bid price for realistic P&L
             if portfolio.active_trade and secs_left is not None and secs_left > 0:
                 reason = portfolio.check_exits(
                     signal,
@@ -224,10 +239,22 @@ async def strategy_loop():
                     secs_left,
                 )
                 if reason:
+                    at = portfolio.active_trade
+                    exit_bid_price = None
+                    if book_valid:
+                        if at.direction == "UP" and top_bids_up:
+                            d = _walk_bids_for_exit(top_bids_up, at.shares)
+                            if d["shares_sold"] > 0:
+                                exit_bid_price = d["avg_price"]
+                        elif at.direction == "DOWN" and down_bids_lv:
+                            d = _walk_bids_for_exit(down_bids_lv, at.shares)
+                            if d["shares_sold"] > 0:
+                                exit_bid_price = d["avg_price"]
                     exited = portfolio.exit_at_market_price(
                         market_info["up_price"],
                         market_info["down_price"],
                         reason,
+                        exit_bid_price=exit_bid_price,
                     )
                     if exited:
                         log.info(
@@ -239,11 +266,18 @@ async def strategy_loop():
 
             # Try entering a trade (only when market has >60s remaining)
             if secs_left is not None and secs_left > 60:
+                bet_size = round(portfolio.capital * 0.02, 2)
+                entry_depth_up   = _walk_asks_for_entry(top_asks_up, bet_size) \
+                                   if book_valid and top_asks_up and bet_size > 0 else None
+                entry_depth_down = _walk_asks_for_entry(down_asks_lv, bet_size) \
+                                   if book_valid and down_asks_lv and bet_size > 0 else None
                 portfolio.consider_entry(
                     signal,
                     market_info["question"],
                     market_info["up_price"],
                     market_info["down_price"],
+                    entry_depth_up=entry_depth_up,
+                    entry_depth_down=entry_depth_down,
                 )
 
             # Emergency binary close: market expiring with open trade
@@ -273,34 +307,15 @@ async def strategy_loop():
                 market_info["down_price"],
             )
 
-            # ── Realistic price data (display only, algo unchanged) ────────────
-            # In a real trade: you BUY at best_ask, you SELL at best_bid.
-            # The algo still uses vwap_mid internally — this is only for the dashboard.
-            up_ask = ob["best_ask"]
-            up_bid = ob["best_bid"]
-            # Guard: only derive DOWN prices when the UP book has valid two-sided data.
-            # If best_ask = 0 (no asks in book), 1-0 = 1.0 is completely wrong.
-            book_valid = up_ask > 0.005 and up_bid > 0.005 and up_ask > up_bid
-            down_ask = round(1 - up_bid, 4) if book_valid else None   # buy DOWN
-            down_bid = round(1 - up_ask, 4) if book_valid else None   # sell DOWN
-
-            top_asks_up = ob.get("top_asks", [])
-            top_bids_up = ob.get("top_bids", [])
-
+            # ── Realistic exit depth for active trade (display) ───────────────
             if portfolio.active_trade and portfolio_stats.get("active_trade"):
                 at = portfolio.active_trade
-
-                # Walk the book depth to simulate selling at.shares at current market.
-                # UP trade: sell UP tokens → walk UP bids (descending)
-                # DOWN trade: sell DOWN tokens → DOWN bids = complement of UP asks
-                #   (UP asks ascending [0.40,0.41,...] → 1-UP asks descending [0.60,0.59,...] ✓)
                 exit_depth = None
                 if book_valid:
                     if at.direction == "UP" and top_bids_up:
                         exit_depth = _walk_bids_for_exit(top_bids_up, at.shares)
-                    elif at.direction == "DOWN" and top_asks_up:
-                        down_bids = [(round(1 - p, 4), s) for p, s in top_asks_up]
-                        exit_depth = _walk_bids_for_exit(down_bids, at.shares)
+                    elif at.direction == "DOWN" and down_bids_lv:
+                        exit_depth = _walk_bids_for_exit(down_bids_lv, at.shares)
 
                 if exit_depth and exit_depth["shares_sold"] > 0:
                     sim_upnl = portfolio_stats["active_trade"].get("unrealized_pnl", 0)

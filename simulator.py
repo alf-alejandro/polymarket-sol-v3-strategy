@@ -106,7 +106,9 @@ class Portfolio:
     # ── Entry ─────────────────────────────────────────────────────────────────
 
     def consider_entry(self, signal: dict, market_question: str,
-                       up_price: float, down_price: float) -> bool:
+                       up_price: float, down_price: float,
+                       entry_depth_up: dict = None,
+                       entry_depth_down: dict = None) -> bool:
         if self.active_trade is not None:
             return False
         if self.capital < 1.0:
@@ -131,13 +133,22 @@ class Portfolio:
         if conf < MIN_CONFIDENCE:
             return False
 
-        bet_size    = round(self.capital * self.trade_pct, 2)
-        entry_price = up_price if direction == "UP" else down_price
+        bet_size = round(self.capital * self.trade_pct, 2)
+
+        # Use depth-walked avg ask price and shares when available (realistic entry).
+        # Fallback: vwap_mid (old behaviour, used when book is one-sided / unavailable).
+        depth = entry_depth_up if direction == "UP" else entry_depth_down
+        if depth and depth.get("shares", 0) > 0:
+            entry_price = depth["avg_price"]
+            shares      = depth["shares"]
+        else:
+            entry_price = up_price if direction == "UP" else down_price
+            shares      = round(bet_size / entry_price, 4)
+
         if entry_price <= 0.01:
             return False
 
         self.capital = round(self.capital - bet_size, 4)
-        shares = round(bet_size / entry_price, 4)
         self._trade_counter  += 1
         self._opposing_streak = 0
         self.active_trade = Trade(
@@ -197,13 +208,17 @@ class Portfolio:
         return None
 
     def exit_at_market_price(self, up_price: float, down_price: float,
-                             exit_reason: str) -> Optional[Trade]:
-        """Close active trade at current mid-market token price."""
+                             exit_reason: str,
+                             exit_bid_price: float = None) -> Optional[Trade]:
+        """Close active trade.
+        Uses exit_bid_price (depth-walked avg bid) when provided for realism;
+        falls back to vwap_mid when the book is unavailable."""
         if not self.active_trade:
             return None
 
         trade = self.active_trade
-        cp    = self.current_price_for_trade(up_price, down_price)
+        cp    = exit_bid_price if exit_bid_price is not None \
+                else self.current_price_for_trade(up_price, down_price)
         pnl   = trade.close_market(cp, exit_reason)
 
         self.capital = round(self.capital + trade.bet_size + pnl, 4)

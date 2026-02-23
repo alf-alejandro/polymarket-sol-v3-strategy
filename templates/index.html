@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SOL Strategy v3 Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --green:  #00ff88;
+      --red:    #ff4466;
+      --yellow: #fbbf24;
+      --cyan:   #22d3ee;
+      --purple: #a78bfa;
+      --bg:     #0a0e1a;
+      --card:   #0f1629;
+      --border: #1e2d4a;
+    }
+    * { box-sizing: border-box; }
+    body { background: var(--bg); color: #e2e8f0; font-family: 'Courier New', monospace; margin: 0; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; }
+
+    /* Signal pulse */
+    @keyframes pulse-green { 0%,100%{box-shadow:0 0 0 0 rgba(0,255,136,.6)} 50%{box-shadow:0 0 0 12px rgba(0,255,136,0)} }
+    @keyframes pulse-red   { 0%,100%{box-shadow:0 0 0 0 rgba(255,68,102,.6)} 50%{box-shadow:0 0 0 12px rgba(255,68,102,0)} }
+    @keyframes pulse-yellow{ 0%,100%{box-shadow:0 0 0 0 rgba(251,191,36,.4)} 50%{box-shadow:0 0 0 8px rgba(251,191,36,0)} }
+    .signal-up     { animation: pulse-green  1.5s infinite; border-color: var(--green) !important; }
+    .signal-down   { animation: pulse-red    1.5s infinite; border-color: var(--red)   !important; }
+    .signal-neutral{ animation: pulse-yellow 2s   infinite; border-color: var(--yellow)!important; }
+
+    /* OBI bar */
+    .obi-track { background: #1e2d4a; border-radius: 4px; height: 20px; position: relative; overflow: hidden; }
+    .obi-fill  { height: 100%; transition: width .5s ease, background .3s ease; border-radius: 4px; }
+
+    /* Countdown ring */
+    .ring-container { position: relative; width: 90px; height: 90px; }
+    .ring-svg { transform: rotate(-90deg); }
+    .ring-bg  { fill: none; stroke: #1e2d4a; stroke-width: 6; }
+    .ring-fg  { fill: none; stroke-width: 6; stroke-linecap: round; transition: stroke-dashoffset .5s ease, stroke .3s; }
+    .ring-text{ position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+                flex-direction: column; font-size: 13px; font-weight: bold; }
+
+    /* Depth bar */
+    .depth-bar { height: 6px; border-radius: 2px; transition: width .4s ease; }
+
+    /* TP/SL progress bar */
+    .progress-track { background: #1e2d4a; border-radius: 4px; height: 10px; position: relative; overflow: hidden; }
+    .progress-fill  { height: 100%; border-radius: 4px; transition: width .5s ease, background .3s ease; }
+    .progress-marker { position: absolute; top: 0; bottom: 0; width: 2px; background: rgba(255,255,255,0.5); }
+
+    /* Table */
+    .trade-table th { font-size: 10px; letter-spacing: .05em; color: #64748b; border-bottom: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+    .trade-table td { font-size: 11px; padding: 5px 8px; border-bottom: 1px solid #0f1e35; }
+    .trade-table tr:last-child td { border-bottom: none; }
+
+    /* Ticker */
+    .stat-label { font-size: 10px; color: #64748b; letter-spacing: .06em; text-transform: uppercase; }
+    .stat-value { font-size: 18px; font-weight: bold; }
+
+    /* OBI history dots */
+    .dot-up      { color: var(--green); }
+    .dot-down    { color: var(--red);   }
+    .dot-neutral { color: var(--yellow);}
+
+    /* Glow */
+    .glow-green { text-shadow: 0 0 10px rgba(0,255,136,.7); }
+    .glow-red   { text-shadow: 0 0 10px rgba(255,68,102,.7); }
+    .glow-yellow{ text-shadow: 0 0 10px rgba(251,191,36,.6); }
+
+    /* Status dot */
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .status-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+    .status-run  { background: var(--green); animation: blink 2s infinite; }
+    .status-err  { background: var(--red); }
+    .status-init { background: var(--yellow); animation: blink 1s infinite; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* Exit reason badges */
+    .badge { font-size: 9px; font-weight: bold; padding: 1px 5px; border-radius: 3px; letter-spacing: .05em; }
+    .badge-tp     { background: #1a3a2a; color: var(--green); }
+    .badge-sl     { background: #3a1a1a; color: var(--red); }
+    .badge-signal { background: #1a2a3a; color: var(--cyan); }
+    .badge-late   { background: #2a2a1a; color: var(--yellow); }
+    .badge-expire { background: #1e2d4a; color: #64748b; }
+    .badge-forced { background: #2a1a2a; color: var(--purple); }
+  </style>
+</head>
+<body class="min-h-screen p-3">
+
+  <!-- ═══ HEADER ═══ -->
+  <header class="card flex items-center justify-between px-4 py-3 mb-3">
+    <div class="flex items-center gap-3">
+      <div>
+        <div class="text-xs text-slate-500">POLYMARKET CLOB · SOL v3 · Precios Reales</div>
+        <div class="text-sm font-bold text-cyan-400" id="market-question">Conectando...</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-6">
+      <div class="text-center">
+        <div class="stat-label">UP ask (compra real)</div>
+        <div class="text-sm font-bold" id="header-up-ask" style="color:var(--green)">—</div>
+        <div class="text-xs text-slate-500">mid: <span id="header-up-price">—</span></div>
+      </div>
+      <div class="text-center">
+        <div class="stat-label">DOWN ask (compra real)</div>
+        <div class="text-sm font-bold" id="header-down-ask" style="color:var(--red)">—</div>
+        <div class="text-xs text-slate-500">mid: <span id="header-down-price">—</span></div>
+      </div>
+      <div class="text-center">
+        <div class="stat-label">Spread UP</div>
+        <div class="text-sm font-bold text-yellow-400" id="header-spread">—</div>
+        <div class="text-xs text-slate-500">bid: <span id="header-up-bid" style="color:var(--cyan)">—</span></div>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="status-dot status-init" id="status-dot"></span>
+        <span class="text-xs text-slate-400" id="status-label">Inicializando</span>
+      </div>
+      <div class="text-xs text-slate-500 tabular-nums" id="last-update">—</div>
+    </div>
+  </header>
+
+  <!-- ═══ ROW 1: Signal | OBI | Portfolio | Countdown ═══ -->
+  <div class="grid grid-cols-12 gap-3 mb-3">
+
+    <!-- Signal Widget -->
+    <div class="col-span-3 card p-4 flex flex-col items-center justify-center border-2 signal-neutral" id="signal-card" style="min-height:200px">
+      <div class="text-xs text-slate-500 mb-1">SEÑAL OBI</div>
+      <div class="text-3xl font-black mb-2 glow-yellow" id="signal-label" style="color:var(--yellow)">NEUTRAL</div>
+      <div class="text-xs text-slate-400 mb-3" id="signal-desc">Esperando datos...</div>
+      <div class="w-full">
+        <div class="flex justify-between text-xs text-slate-500 mb-1">
+          <span>Confianza</span>
+          <span id="conf-pct">50%</span>
+        </div>
+        <div class="obi-track w-full">
+          <div class="obi-fill" id="conf-bar" style="width:50%;background:#fbbf24"></div>
+        </div>
+      </div>
+      <div class="mt-3 w-full grid grid-cols-2 gap-2 text-center">
+        <div>
+          <div class="stat-label">OBI Actual</div>
+          <div class="text-sm font-bold" id="obi-now">—</div>
+        </div>
+        <div>
+          <div class="stat-label">OBI Avg</div>
+          <div class="text-sm font-bold" id="obi-avg">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OBI Gauge + History -->
+    <div class="col-span-3 card p-4">
+      <div class="text-xs text-slate-500 mb-3">ORDER BOOK IMBALANCE</div>
+      <div class="mb-2 text-xs text-slate-500 flex justify-between">
+        <span style="color:var(--red)">◄ SELL</span>
+        <span style="color:var(--green)">BUY ►</span>
+      </div>
+      <div class="obi-track mb-1 relative">
+        <div style="position:absolute;left:50%;top:0;bottom:0;width:2px;background:#374151;z-index:1"></div>
+        <div class="obi-fill" id="obi-bar" style="width:50%;margin-left:50%;background:var(--yellow)"></div>
+      </div>
+      <div class="text-center text-lg font-bold tabular-nums mb-4" id="obi-combined">0.00%</div>
+
+      <div class="space-y-2 mb-3">
+        <div>
+          <div class="flex justify-between text-xs mb-1">
+            <span style="color:var(--green)">Bid Vol</span>
+            <span id="bid-vol" class="font-mono">—</span>
+          </div>
+          <div class="obi-track"><div class="depth-bar" id="bid-bar" style="background:var(--green);width:50%"></div></div>
+        </div>
+        <div>
+          <div class="flex justify-between text-xs mb-1">
+            <span style="color:var(--red)">Ask Vol</span>
+            <span id="ask-vol" class="font-mono">—</span>
+          </div>
+          <div class="obi-track"><div class="depth-bar" id="ask-bar" style="background:var(--red);width:50%"></div></div>
+        </div>
+      </div>
+
+      <div class="text-xs text-slate-500 mb-1">Historial señales</div>
+      <div class="flex gap-1 flex-wrap" id="obi-history"></div>
+    </div>
+
+    <!-- Portfolio Stats -->
+    <div class="col-span-4 card p-4">
+      <div class="text-xs text-slate-500 mb-3">SIMULACIÓN PORTAFOLIO ($100 · 2%/trade) — v2 Smart Exits</div>
+      <div class="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <div class="stat-label">Equity</div>
+          <div class="stat-value" id="equity">$100.00</div>
+        </div>
+        <div>
+          <div class="stat-label">P&L Total</div>
+          <div class="stat-value" id="total-pnl" style="color:var(--yellow)">$0.00</div>
+        </div>
+        <div>
+          <div class="stat-label">P&L %</div>
+          <div class="text-base font-bold" id="total-pnl-pct" style="color:var(--yellow)">0.00%</div>
+        </div>
+        <div>
+          <div class="stat-label">Win Rate</div>
+          <div class="text-base font-bold" id="win-rate" style="color:var(--cyan)">—</div>
+        </div>
+        <div>
+          <div class="stat-label">Trades</div>
+          <div class="text-base font-bold" id="trades-total">0</div>
+        </div>
+        <div>
+          <div class="stat-label">W / L</div>
+          <div class="text-base font-bold"><span id="wins" style="color:var(--green)">0</span> / <span id="losses" style="color:var(--red)">0</span></div>
+        </div>
+      </div>
+
+      <!-- Exit reason summary -->
+      <div class="text-xs text-slate-500 mb-1">Salidas por tipo</div>
+      <div class="flex flex-wrap gap-1 mb-3" id="exit-reasons"></div>
+
+      <!-- Active trade box -->
+      <div id="active-trade-box" class="hidden rounded-lg p-3 border" style="border-color:var(--border)">
+        <div class="text-xs text-slate-500 mb-2">TRADE ACTIVO</div>
+        <div class="flex justify-between items-center mb-2">
+          <div>
+            <span class="text-xs font-bold px-2 py-1 rounded" id="at-direction" style="background:#1e3a2a;color:var(--green)">UP</span>
+            <span class="text-xs ml-2">entrada <span id="at-entry" class="text-white font-mono">—</span></span>
+          </div>
+        </div>
+        <div class="flex justify-between text-xs text-slate-400 mb-2">
+          <span>Bet: <span id="at-bet" class="text-white">$2.00</span></span>
+          <span>Shares: <span id="at-shares" class="text-white font-mono">—</span></span>
+        </div>
+
+        <!-- P&L comparación simulado vs real -->
+        <div class="rounded p-2 mb-2" style="background:#080d1a;border:1px solid #1e2d4a">
+          <div class="grid grid-cols-2 gap-2 mb-1">
+            <div class="text-center">
+              <div class="text-xs text-slate-500 mb-0.5">P&L Simulado (mid)</div>
+              <div class="font-bold text-sm" id="at-upnl">—</div>
+              <div class="text-xs text-slate-500">precio: <span id="at-current" class="font-mono">—</span></div>
+            </div>
+            <div class="text-center rounded" style="background:#0f1a2a;padding:4px">
+              <div class="text-xs mb-0.5" style="color:var(--cyan)">P&L Real (bid) ★</div>
+              <div class="font-bold text-sm" id="at-real-upnl">—</div>
+              <div class="text-xs text-slate-500">bid: <span id="at-real-current" class="font-mono">—</span></div>
+            </div>
+          </div>
+          <div class="flex justify-between text-xs pt-1" style="border-top:1px solid #1e2d4a">
+            <span class="text-slate-500">Spread cost (sim − real):</span>
+            <span id="at-spread-impact" style="color:var(--red)">—</span>
+          </div>
+        </div>
+
+        <!-- TP/SL Progress Bar -->
+        <div class="mb-1">
+          <div class="flex justify-between text-xs mb-1">
+            <span style="color:var(--red)">SL <span id="at-sl-price" class="font-mono">—</span></span>
+            <span class="text-slate-400 text-center" id="at-progress-label">—</span>
+            <span style="color:var(--green)">TP <span id="at-tp-price" class="font-mono">—</span></span>
+          </div>
+          <div class="progress-track">
+            <div id="at-progress-bar" class="progress-fill" style="width:14%;background:var(--yellow)"></div>
+            <div id="at-entry-marker" class="progress-marker" style="left:14%"></div>
+          </div>
+          <div class="flex justify-between text-xs mt-1">
+            <span style="color:var(--red)" id="at-sl-pnl">—</span>
+            <span style="color:var(--green)" id="at-tp-pnl">—</span>
+          </div>
+        </div>
+        <!-- Opposing streak -->
+        <div class="mt-1 text-xs text-slate-500" id="at-opposing">Oposición: 0/3</div>
+      </div>
+      <div class="mt-2 text-xs text-slate-500" id="streak-info"></div>
+    </div>
+
+    <!-- Countdown Timer -->
+    <div class="col-span-2 card p-4 flex flex-col items-center justify-center">
+      <div class="text-xs text-slate-500 mb-3 text-center">CIERRA EN</div>
+      <div class="ring-container mb-2">
+        <svg class="ring-svg" width="90" height="90" viewBox="0 0 90 90">
+          <circle class="ring-bg" cx="45" cy="45" r="39"/>
+          <circle class="ring-fg" id="ring-fg" cx="45" cy="45" r="39"
+                  stroke="var(--green)" stroke-dasharray="245" stroke-dashoffset="0"/>
+        </svg>
+        <div class="ring-text" id="countdown-text">
+          <span style="font-size:22px" id="ct-mm">5</span>
+          <span style="font-size:11px;color:#64748b">min</span>
+        </div>
+      </div>
+      <div class="text-center">
+        <div class="stat-label">Snapshot #</div>
+        <div class="font-bold text-lg" id="snap-num">0</div>
+      </div>
+      <div class="text-xs text-slate-500 mt-2 text-center" id="market-slug">—</div>
+    </div>
+  </div>
+
+  <!-- ═══ ROW 2: P&L Chart | Order Book Depth ═══ -->
+  <div class="grid grid-cols-12 gap-3 mb-3">
+
+    <!-- P&L Chart -->
+    <div class="col-span-8 card p-4">
+      <div class="flex justify-between items-center mb-3">
+        <div class="text-xs text-slate-500">P&L ACUMULADO (USD)</div>
+        <div class="flex gap-4 text-xs">
+          <span>Mejor: <span id="best-trade" style="color:var(--green)">—</span></span>
+          <span>Peor: <span id="worst-trade" style="color:var(--red)">—</span></span>
+          <span>Promedio: <span id="avg-trade" class="text-white">—</span></span>
+        </div>
+      </div>
+      <canvas id="pnl-chart" height="100"></canvas>
+    </div>
+
+    <!-- Order Book Depth -->
+    <div class="col-span-4 card p-4">
+      <div class="text-xs text-slate-500 mb-3">ORDER BOOK (UP token)</div>
+      <div class="grid grid-cols-2 gap-x-3 text-xs">
+        <div>
+          <div class="text-slate-500 mb-1" style="color:var(--red)">ASKS (Sell UP)</div>
+          <div id="asks-list" class="space-y-1 font-mono"></div>
+        </div>
+        <div>
+          <div class="text-slate-500 mb-1" style="color:var(--green)">BIDS (Buy UP)</div>
+          <div id="bids-list" class="space-y-1 font-mono"></div>
+        </div>
+      </div>
+      <div class="mt-3 pt-3 border-t" style="border-color:var(--border)">
+        <div class="grid grid-cols-2 gap-2 text-xs text-center">
+          <div><div class="stat-label">Best Bid</div><div class="font-bold" id="best-bid" style="color:var(--green)">—</div></div>
+          <div><div class="stat-label">Best Ask</div><div class="font-bold" id="best-ask" style="color:var(--red)">—</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ ROW 3: Trade Log ═══ -->
+  <div class="card p-4">
+    <div class="text-xs text-slate-500 mb-3">HISTORIAL DE TRADES — v2 (TP/SL/Signal/Late/Expire)</div>
+    <div class="overflow-x-auto">
+      <table class="trade-table w-full">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Mercado</th>
+            <th>Dir</th>
+            <th>Entrada</th>
+            <th>Bet</th>
+            <th>Shares</th>
+            <th>Salida</th>
+            <th>P&L</th>
+            <th>Exit</th>
+            <th>Status</th>
+            <th>Hora</th>
+          </tr>
+        </thead>
+        <tbody id="trade-tbody">
+          <tr><td colspan="11" class="text-center text-slate-500 py-4">Sin trades aún...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══ SCRIPTS ═══ -->
+  <script>
+  // ── Chart setup ────────────────────────────────────────────────────────────
+  const pnlCtx = document.getElementById('pnl-chart').getContext('2d');
+  const pnlChart = new Chart(pnlCtx, {
+    type: 'line',
+    data: {
+      labels: ['0'],
+      datasets: [{
+        label: 'P&L ($)',
+        data: [0],
+        borderColor: '#00ff88',
+        backgroundColor: 'rgba(0,255,136,0.06)',
+        borderWidth: 2,
+        pointRadius: 2,
+        pointBackgroundColor: '#00ff88',
+        fill: true,
+        tension: 0.3,
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: { duration: 400 },
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (ctx) => ` $${ctx.parsed.y.toFixed(4)}` } }
+      },
+      scales: {
+        x: { display: false },
+        y: {
+          grid: { color: '#1e2d4a' },
+          ticks: { color: '#64748b', font: { size: 10 }, callback: v => `$${v.toFixed(2)}` }
+        }
+      }
+    }
+  });
+
+  // ── WebSocket ───────────────────────────────────────────────────────────────
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  let ws;
+
+  function connect() {
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+    ws.onmessage = e => update(JSON.parse(e.data));
+    ws.onclose   = ()  => setTimeout(connect, 3000);
+    ws.onerror   = ()  => ws.close();
+    setInterval(() => { if (ws.readyState === 1) ws.send('ping'); }, 20000);
+  }
+  connect();
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+  const $ = id => document.getElementById(id);
+  const fmt    = (v, d=2) => v !== undefined && v !== null ? Number(v).toFixed(d) : '—';
+  const fmtPnl = v => {
+    if (v === undefined || v === null) return '—';
+    const s = Number(v) >= 0 ? '+' : '';
+    return s + Number(v).toFixed(4);
+  };
+
+  function setColor(el, value, neutral='#e2e8f0') {
+    const v = Number(value);
+    el.style.color = v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : neutral;
+  }
+
+  const EXIT_BADGE = {
+    TP:     '<span class="badge badge-tp">TP</span>',
+    SL:     '<span class="badge badge-sl">SL</span>',
+    SIGNAL: '<span class="badge badge-signal">SIG</span>',
+    LATE:   '<span class="badge badge-late">LATE</span>',
+    EXPIRE: '<span class="badge badge-expire">EXPIRE</span>',
+    FORCED: '<span class="badge badge-forced">FORCED</span>',
+  };
+
+  function exitBadge(r) {
+    return EXIT_BADGE[r] || `<span class="badge badge-expire">${r||'—'}</span>`;
+  }
+
+  // ── Main update ─────────────────────────────────────────────────────────────
+  function update(s) {
+    updateStatus(s.status);
+    $('last-update').textContent = new Date().toLocaleTimeString();
+    if (s.snapshot) $('snap-num').textContent = s.snapshot;
+
+    if (s.market && s.market.question) {
+      $('market-question').textContent   = s.market.question;
+      $('market-slug').textContent       = s.market.market_slug || '';
+      // mid prices (lo que usa el algoritmo internamente)
+      $('header-up-price').textContent   = fmt(s.market.up_price, 4);
+      $('header-down-price').textContent = fmt(s.market.down_price, 4);
+      // precios reales de compra/venta
+      $('header-up-ask').textContent     = fmt(s.market.up_ask, 4);
+      $('header-down-ask').textContent   = fmt(s.market.down_ask, 4);
+      $('header-up-bid').textContent     = fmt(s.market.up_bid, 4);
+    }
+
+    if (s.orderbook) updateOrderBook(s.orderbook);
+    if (s.signal)    updateSignal(s.signal);
+    if (s.market)    updateCountdown(s.market.seconds_remaining);
+    if (s.portfolio) updatePortfolio(s.portfolio);
+  }
+
+  // ── Status ─────────────────────────────────────────────────────────────────
+  function updateStatus(status) {
+    const dot   = $('status-dot');
+    const label = $('status-label');
+    dot.className = 'status-dot';
+    const map = {
+      running:      ['status-run',  'En vivo'],
+      searching:    ['status-init', 'Buscando mercado...'],
+      initializing: ['status-init', 'Inicializando'],
+      error:        ['status-err',  'Error'],
+    };
+    const [cls, txt] = map[status] || ['status-init', status];
+    dot.classList.add(cls);
+    label.textContent = txt;
+  }
+
+  // ── Order Book ─────────────────────────────────────────────────────────────
+  function updateOrderBook(ob) {
+    $('header-spread').textContent = fmt(ob.spread, 4);
+    $('best-bid').textContent      = fmt(ob.best_bid, 4);
+    $('best-ask').textContent      = fmt(ob.best_ask, 4);
+    $('bid-vol').textContent       = `$${fmt(ob.bid_volume, 0)}`;
+    $('ask-vol').textContent       = `$${fmt(ob.ask_volume, 0)}`;
+
+    const maxVol = Math.max(ob.bid_volume, ob.ask_volume, 1);
+    $('bid-bar').style.width = (ob.bid_volume / maxVol * 100) + '%';
+    $('ask-bar').style.width = (ob.ask_volume / maxVol * 100) + '%';
+
+    const maxSize = Math.max(...(ob.top_asks||[]).map(a=>a[1]), ...(ob.top_bids||[]).map(b=>b[1]), 1);
+
+    $('asks-list').innerHTML = (ob.top_asks||[]).slice(0,8).reverse().map(([p,s]) => {
+      const w = Math.round(s/maxSize*100);
+      return `<div class="relative py-0.5">
+        <div class="absolute inset-y-0 right-0 opacity-20 rounded" style="width:${w}%;background:var(--red)"></div>
+        <div class="flex justify-between relative z-10">
+          <span style="color:var(--red)">${fmt(p,4)}</span>
+          <span class="text-slate-400">${fmt(s,1)}</span>
+        </div>
+      </div>`;
+    }).join('');
+
+    $('bids-list').innerHTML = (ob.top_bids||[]).slice(0,8).map(([p,s]) => {
+      const w = Math.round(s/maxSize*100);
+      return `<div class="relative py-0.5">
+        <div class="absolute inset-y-0 left-0 opacity-20 rounded" style="width:${w}%;background:var(--green)"></div>
+        <div class="flex justify-between relative z-10">
+          <span style="color:var(--green)">${fmt(p,4)}</span>
+          <span class="text-slate-400">${fmt(s,1)}</span>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  // ── Signal ─────────────────────────────────────────────────────────────────
+  function updateSignal(sig) {
+    const label   = sig.label || 'NEUTRAL';
+    const isUp    = label.includes('UP');
+    const isDown  = label.includes('DOWN');
+    const color   = isUp ? 'var(--green)' : isDown ? 'var(--red)' : 'var(--yellow)';
+    const glowCls = isUp ? 'glow-green' : isDown ? 'glow-red' : 'glow-yellow';
+    const animCls = isUp ? 'signal-up'  : isDown ? 'signal-down' : 'signal-neutral';
+
+    $('signal-label').textContent = label;
+    $('signal-label').style.color = color;
+    $('signal-label').className   = `text-3xl font-black mb-2 ${glowCls}`;
+
+    const card = $('signal-card');
+    card.className = card.className.replace(/signal-\w+/, '') + ' ' + animCls;
+
+    const desc = isUp ? 'Presión compradora dominante → SOL sube'
+               : isDown ? 'Presión vendedora dominante → SOL baja'
+               : 'Sin señal clara – fuera del umbral';
+    $('signal-desc').textContent = desc;
+
+    const conf = sig.confidence || 50;
+    $('conf-pct').textContent    = conf + '%';
+    const confBar = $('conf-bar');
+    confBar.style.width      = conf + '%';
+    confBar.style.background = color;
+
+    $('obi-now').textContent = ((sig.obi_now||0)*100).toFixed(1) + '%';
+    $('obi-avg').textContent = ((sig.obi_avg||0)*100).toFixed(1) + '%';
+    setColor($('obi-now'), sig.obi_now);
+    setColor($('obi-avg'), sig.obi_avg);
+
+    const obi = sig.combined || 0;
+    const pct = Math.min(Math.abs(obi) * 100, 100);
+    const bar = $('obi-bar');
+    if (obi >= 0) {
+      bar.style.width      = pct + '%';
+      bar.style.marginLeft = '50%';
+      bar.style.background = 'var(--green)';
+    } else {
+      bar.style.width      = pct + '%';
+      bar.style.marginLeft = (50 - pct) + '%';
+      bar.style.background = 'var(--red)';
+    }
+    $('obi-combined').textContent = (obi >= 0 ? '+' : '') + (obi*100).toFixed(2) + '%';
+    setColor($('obi-combined'), obi);
+
+    const hist = sig.history || [];
+    const thr  = sig.threshold || 0.15;
+    $('obi-history').innerHTML = hist.map(o => {
+      const cls = o > thr ? 'dot-up' : o < -thr ? 'dot-down' : 'dot-neutral';
+      const ch  = o > thr ? '▲' : o < -thr ? '▼' : '─';
+      return `<span class="${cls}" title="${(o*100).toFixed(1)}%">${ch}</span>`;
+    }).join('');
+  }
+
+  // ── Countdown ──────────────────────────────────────────────────────────────
+  const TOTAL_SECS = 300;
+  function updateCountdown(secs) {
+    if (secs === null || secs === undefined) { $('ct-mm').textContent = '—'; return; }
+    const s  = Math.max(0, Math.round(secs));
+    const m  = Math.floor(s/60);
+    const ss = s % 60;
+    $('ct-mm').textContent = m + ':' + ss.toString().padStart(2,'0');
+
+    const circumference = 2 * Math.PI * 39;
+    const offset = circumference * (1 - s / TOTAL_SECS);
+    const fg = $('ring-fg');
+    fg.style.strokeDashoffset = offset;
+    fg.style.stroke = s > 120 ? 'var(--green)' : s > 30 ? 'var(--yellow)' : 'var(--red)';
+  }
+
+  // ── Portfolio ──────────────────────────────────────────────────────────────
+  function updatePortfolio(p) {
+    $('equity').textContent        = '$' + fmt(p.equity, 2);
+    $('total-pnl').textContent     = fmtPnl(p.total_pnl);
+    $('total-pnl-pct').textContent = (p.total_pnl_pct >= 0 ? '+' : '') + fmt(p.total_pnl_pct, 2) + '%';
+    $('win-rate').textContent      = p.total_trades > 0 ? p.win_rate + '%' : '—';
+    $('trades-total').textContent  = p.total_trades;
+    $('wins').textContent          = p.wins;
+    $('losses').textContent        = p.losses;
+
+    setColor($('total-pnl'),     p.total_pnl);
+    setColor($('total-pnl-pct'), p.total_pnl_pct);
+
+    $('best-trade').textContent  = p.best_trade  !== 0 ? '+$' + fmt(p.best_trade,  4) : '—';
+    $('worst-trade').textContent = p.worst_trade !== 0 ? '$'  + fmt(p.worst_trade, 4) : '—';
+    $('avg-trade').textContent   = p.total_trades > 0  ? '$'  + fmt(p.avg_pnl,     4) : '—';
+
+    // Exit reason breakdown
+    const reasons = p.exit_reasons || {};
+    $('exit-reasons').innerHTML = Object.entries(reasons).map(([r, n]) =>
+      `${exitBadge(r)} <span class="text-xs text-slate-400">${n}</span>`
+    ).join(' ');
+
+    // Active trade
+    const atBox = $('active-trade-box');
+    if (p.active_trade) {
+      const at = p.active_trade;
+      atBox.classList.remove('hidden');
+      const isUp = at.direction === 'UP';
+      const dirEl = $('at-direction');
+      dirEl.textContent      = at.direction;
+      dirEl.style.background = isUp ? '#1e3a2a' : '#3a1e1e';
+      dirEl.style.color      = isUp ? 'var(--green)' : 'var(--red)';
+
+      $('at-entry').textContent   = fmt(at.entry_price, 4);
+      $('at-bet').textContent     = '$' + fmt(at.bet_size, 2);
+      $('at-shares').textContent  = fmt(at.shares, 2);
+
+      // Simulado (mid — lo que usa el algoritmo)
+      $('at-current').textContent = fmt(at.current_price, 4);
+      const upnlEl = $('at-upnl');
+      upnlEl.textContent = fmtPnl(at.unrealized_pnl);
+      setColor(upnlEl, at.unrealized_pnl);
+
+      // Real (bid — lo que recibirías si vendieras ahora)
+      const realUpnlEl = $('at-real-upnl');
+      realUpnlEl.textContent = fmtPnl(at.real_unrealized_pnl);
+      setColor(realUpnlEl, at.real_unrealized_pnl);
+      $('at-real-current').textContent = fmt(at.real_current_price, 4);
+
+      // Spread impact
+      const siEl = $('at-spread-impact');
+      const si = at.spread_impact || 0;
+      siEl.textContent = (si >= 0 ? '-$' : '+$') + Math.abs(si).toFixed(4);
+      siEl.style.color = si > 0 ? 'var(--red)' : 'var(--green)';
+
+      // TP/SL progress bar
+      const sl = at.sl_price || 0;
+      const tp = at.tp_price || 1;
+      const cp = at.current_price || at.entry_price;
+      const pct = at.progress_pct || 0;
+      const entryPct = Math.max(0, Math.min(100,
+        (at.entry_price - sl) / (tp - sl) * 100
+      ));
+
+      $('at-sl-price').textContent = fmt(sl, 4);
+      $('at-tp-price').textContent = fmt(tp > 1 ? '>1.0' : tp, 4);
+      $('at-sl-pnl').textContent   = '$' + fmt(at.sl_pnl, 2);
+      $('at-tp-pnl').textContent   = '+$' + fmt(at.tp_pnl, 2);
+
+      const bar = $('at-progress-bar');
+      bar.style.width = pct + '%';
+      bar.style.background = pct < 20 ? 'var(--red)' : pct > 70 ? 'var(--green)' : 'var(--yellow)';
+
+      $('at-entry-marker').style.left = entryPct + '%';
+      $('at-progress-label').textContent = pct.toFixed(0) + '%';
+
+      const opp = at.opposing_streak || 0;
+      $('at-opposing').textContent = `Señal contraria: ${opp}/3`;
+      $('at-opposing').style.color = opp >= 2 ? 'var(--red)' : opp === 1 ? 'var(--yellow)' : '#64748b';
+    } else {
+      atBox.classList.add('hidden');
+    }
+
+    // Signal streak
+    const streak = p.signal_streak;
+    if (streak && streak.label && streak.count > 0) {
+      $('streak-info').textContent = `Racha señal ${streak.label}: ${streak.count} snap${streak.count>1?'s':''}`;
+    } else {
+      $('streak-info').textContent = '';
+    }
+
+    // P&L chart
+    const hist = p.pnl_history || [0];
+    pnlChart.data.labels   = hist.map((_, i) => i);
+    pnlChart.data.datasets[0].data = hist;
+    const last = hist[hist.length - 1] || 0;
+    const lineColor = last >= 0 ? '#00ff88' : '#ff4466';
+    const fillColor = last >= 0 ? 'rgba(0,255,136,0.06)' : 'rgba(255,68,102,0.06)';
+    pnlChart.data.datasets[0].borderColor          = lineColor;
+    pnlChart.data.datasets[0].backgroundColor      = fillColor;
+    pnlChart.data.datasets[0].pointBackgroundColor = lineColor;
+    pnlChart.update('none');
+
+    updateTradeLog(p.trade_log || []);
+  }
+
+  // ── Trade Log ──────────────────────────────────────────────────────────────
+  function updateTradeLog(trades) {
+    const tbody = $('trade-tbody');
+    if (!trades.length) {
+      tbody.innerHTML = '<tr><td colspan="11" class="text-center text-slate-500 py-4">Sin trades aún...</td></tr>';
+      return;
+    }
+    tbody.innerHTML = trades.map(t => {
+      const pnlColor   = (t.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+      const statusBg   = { WIN: '#1e3a2a', LOSS: '#3a1e1e', OPEN: '#1e2d4a', CANCELLED: '#2a2a1e' }[t.status] || '#1e2d4a';
+      const statusColor= { WIN: 'var(--green)', LOSS: 'var(--red)', OPEN: 'var(--cyan)', CANCELLED: 'var(--yellow)' }[t.status] || '#e2e8f0';
+      const dirColor   = t.direction === 'UP' ? 'var(--green)' : 'var(--red)';
+      const mkt        = (t.market || '').split('-')[0].trim() || '—';
+
+      // Format exit_price: mid-market exits show actual price, binary shows 0/1
+      const exitPriceStr = t.exit_price !== null && t.exit_price !== undefined
+        ? fmt(t.exit_price, 4) : '—';
+
+      return `<tr>
+        <td class="text-slate-400">#${t.id}</td>
+        <td class="text-slate-400" title="${t.market || ''}">${mkt.slice(0,18)}</td>
+        <td style="color:${dirColor};font-weight:bold">${t.direction === 'UP' ? '▲ UP' : '▼ DN'}</td>
+        <td class="font-mono">${fmt(t.entry_price,4)}</td>
+        <td class="font-mono">$${fmt(t.bet_size,2)}</td>
+        <td class="font-mono">${fmt(t.shares,2)}</td>
+        <td class="font-mono">${exitPriceStr}</td>
+        <td class="font-mono font-bold" style="color:${pnlColor}">${t.pnl !== null && t.pnl !== undefined ? fmtPnl(t.pnl) : '—'}</td>
+        <td>${exitBadge(t.exit_reason)}</td>
+        <td><span class="px-2 py-0.5 rounded text-xs font-bold" style="background:${statusBg};color:${statusColor}">${t.status}</span></td>
+        <td class="text-slate-500">${t.entry_time || '—'}</td>
+      </tr>`;
+    }).join('');
+  }
+  </script>
+</body>
+</html>

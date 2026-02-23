@@ -278,6 +278,8 @@ async def strategy_loop():
                     market_info["down_price"],
                     entry_depth_up=entry_depth_up,
                     entry_depth_down=entry_depth_down,
+                    up_bid=up_bid if book_valid else None,
+                    down_bid=down_bid if book_valid else None,
                 )
 
             # Emergency binary close: market expiring with open trade

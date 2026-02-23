@@ -17,6 +17,10 @@ TRADE_PCT        = 0.02      # 2% of capital per trade
 MIN_CONFIDENCE   = 65
 ENTRY_AFTER_N    = 4         # consecutive aligned snaps required to enter
 
+# Entry filters (realistic price guards)
+MIN_ENTRY_PRICE  = 0.10      # skip tokens below 10¢ (huge spread, lottery-ticket probability)
+MAX_ENTRY_SPREAD = 0.25      # skip when (ask-bid)/ask > 25% → SL would fire on 1st snapshot
+
 # v2 exit parameters
 TAKE_PROFIT_MULT = 3.0       # TP when unrealized >= bet * 3
 STOP_LOSS_PCT    = 0.50      # SL when unrealized <= -(bet * 0.50)
@@ -108,7 +112,9 @@ class Portfolio:
     def consider_entry(self, signal: dict, market_question: str,
                        up_price: float, down_price: float,
                        entry_depth_up: dict = None,
-                       entry_depth_down: dict = None) -> bool:
+                       entry_depth_down: dict = None,
+                       up_bid: float = None,
+                       down_bid: float = None) -> bool:
         if self.active_trade is not None:
             return False
         if self.capital < 1.0:
@@ -147,6 +153,18 @@ class Portfolio:
 
         if entry_price <= 0.01:
             return False
+
+        # Filter 1: skip very cheap tokens (low probability, enormous spreads)
+        if entry_price < MIN_ENTRY_PRICE:
+            return False
+
+        # Filter 2: skip wide-spread entries — (ask-bid)/ask > MAX_ENTRY_SPREAD
+        # means we'd already be near SL the moment we enter.
+        bid_for_dir = up_bid if direction == "UP" else down_bid
+        if bid_for_dir is not None and bid_for_dir > 0:
+            spread_pct = (entry_price - bid_for_dir) / entry_price
+            if spread_pct > MAX_ENTRY_SPREAD:
+                return False
 
         self.capital = round(self.capital - bet_size, 4)
         self._trade_counter  += 1

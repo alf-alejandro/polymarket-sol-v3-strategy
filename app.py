@@ -140,6 +140,7 @@ async def strategy_loop():
     market_info = None
     snap        = 0
     last_market_id = None
+    error_streak   = 0  # consecutive error count → backoff
 
     while True:
         try:
@@ -176,26 +177,34 @@ async def strategy_loop():
             )
 
             if err or ob is None:
+                err_str = str(err) if err else ""
                 # 404 means market expired → find next slot
-                if err and ("404" in str(err) or "No orderbook" in str(err)):
+                if "404" in err_str or "No orderbook" in err_str:
                     if portfolio.active_trade:
                         portfolio.close_trade(
                             market_info["up_price"],
                             market_info["down_price"],
                         )
                     market_info = None
+                    error_streak = 0
                     state["status"] = "searching"
                     state["error"]  = "Mercado expirado, buscando siguiente..."
                     await broadcast(state)
                     await asyncio.sleep(6)
                 else:
+                    # Rate limit (429) or transient error → exponential backoff
+                    error_streak += 1
+                    wait = min(POLL_INTERVAL * (2 ** (error_streak - 1)), 60)
+                    label = "Rate limit" if "429" in err_str else "Error"
+                    log.warning(f"{label} (streak={error_streak}), backoff {wait:.0f}s: {err_str[:80]}")
                     state["status"] = "error"
-                    state["error"]  = err or "Empty order book"
+                    state["error"]  = f"{label} — esperando {wait:.0f}s (intento {error_streak})"
                     await broadcast(state)
-                    await asyncio.sleep(POLL_INTERVAL)
+                    await asyncio.sleep(wait)
                 continue
 
             # Update market prices
+            error_streak = 0  # successful API call → reset backoff
             market_info["up_price"]   = ob["vwap_mid"]
             market_info["down_price"] = round(1 - ob["vwap_mid"], 4)
             obi_window.append(ob["obi"])
@@ -329,11 +338,15 @@ async def strategy_loop():
             await broadcast(state)
 
         except Exception as exc:
-            log.exception(f"Strategy loop error: {exc}")
+            error_streak += 1
+            wait = min(POLL_INTERVAL * (2 ** (error_streak - 1)), 60)
+            log.exception(f"Strategy loop error (streak={error_streak}): {exc}")
             state["status"] = "error"
             state["error"]  = str(exc)
             market_info = None  # force re-search on next iteration
             await broadcast(state)
+            await asyncio.sleep(wait)
+            continue
 
         await asyncio.sleep(POLL_INTERVAL)
 

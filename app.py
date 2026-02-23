@@ -34,6 +34,55 @@ from strategy_core import (
 from simulator import Portfolio
 import db as database
 
+# ── Order book depth helpers (display only) ───────────────────────────────────
+
+def _walk_asks_for_entry(top_asks: list, bet_usdc: float) -> dict:
+    """Walk ask levels: how many shares can $bet_usdc actually buy at market?
+    top_asks must be sorted ascending (best/cheapest ask first)."""
+    remaining = bet_usdc
+    shares = 0.0
+    cost = 0.0
+    for price, size in top_asks:
+        if remaining <= 0:
+            break
+        fill_usdc = min(remaining, price * size)
+        shares += fill_usdc / price
+        cost += fill_usdc
+        remaining -= fill_usdc
+    avg = cost / shares if shares > 0 else 0.0
+    return {
+        "shares":        round(shares, 4),
+        "avg_price":     round(avg, 4),
+        "cost":          round(cost, 4),
+        "filled":        remaining <= 0.001,
+        "unfilled_usdc": round(max(0.0, remaining), 4),
+        "fill_pct":      round(min(100.0, cost / bet_usdc * 100), 1) if bet_usdc > 0 else 0.0,
+    }
+
+
+def _walk_bids_for_exit(top_bids: list, shares_to_sell: float) -> dict:
+    """Walk bid levels: proceeds from selling shares_to_sell tokens at market.
+    top_bids must be sorted descending (best/highest bid first)."""
+    remaining = shares_to_sell
+    proceeds = 0.0
+    for price, size in top_bids:
+        if remaining <= 0:
+            break
+        fill = min(remaining, size)
+        proceeds += fill * price
+        remaining -= fill
+    sold = shares_to_sell - remaining
+    avg = proceeds / sold if sold > 0 else 0.0
+    return {
+        "shares_sold": round(sold, 4),
+        "avg_price":   round(avg, 4),
+        "proceeds":    round(proceeds, 4),
+        "filled":      remaining <= 0.001,
+        "unfilled":    round(max(0.0, remaining), 4),
+        "fill_pct":    round(min(100.0, sold / shares_to_sell * 100), 1) if shares_to_sell > 0 else 0.0,
+    }
+
+
 # ── Config ────────────────────────────────────────────────────────────────────
 POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", "3"))
 OBI_THRESHOLD = float(os.environ.get("OBI_THRESHOLD", "0.15"))
@@ -218,20 +267,45 @@ async def strategy_loop():
             # ── Realistic price data (display only, algo unchanged) ────────────
             # In a real trade: you BUY at best_ask, you SELL at best_bid.
             # The algo still uses vwap_mid internally — this is only for the dashboard.
-            up_ask   = ob["best_ask"]
-            up_bid   = ob["best_bid"]
-            down_ask = round(1 - ob["best_bid"], 4)   # cost to buy DOWN token
-            down_bid = round(1 - ob["best_ask"], 4)   # proceeds selling DOWN token
+            up_ask = ob["best_ask"]
+            up_bid = ob["best_bid"]
+            # Guard: only derive DOWN prices when the UP book has valid two-sided data.
+            # If best_ask = 0 (no asks in book), 1-0 = 1.0 is completely wrong.
+            book_valid = up_ask > 0.005 and up_bid > 0.005 and up_ask > up_bid
+            down_ask = round(1 - up_bid, 4) if book_valid else None   # buy DOWN
+            down_bid = round(1 - up_ask, 4) if book_valid else None   # sell DOWN
+
+            top_asks_up = ob.get("top_asks", [])
+            top_bids_up = ob.get("top_bids", [])
 
             if portfolio.active_trade and portfolio_stats.get("active_trade"):
                 at = portfolio.active_trade
-                # Current price you'd actually receive if you sold right now
-                real_cp   = up_bid if at.direction == "UP" else down_bid
-                real_upnl = round(at.shares * real_cp - at.bet_size, 4)
-                sim_upnl  = portfolio_stats["active_trade"].get("unrealized_pnl", 0)
-                portfolio_stats["active_trade"]["real_current_price"] = round(real_cp, 4)
-                portfolio_stats["active_trade"]["real_unrealized_pnl"] = real_upnl
-                portfolio_stats["active_trade"]["spread_impact"] = round(sim_upnl - real_upnl, 4)
+
+                # Walk the book depth to simulate selling at.shares at current market.
+                # UP trade: sell UP tokens → walk UP bids (descending)
+                # DOWN trade: sell DOWN tokens → DOWN bids = complement of UP asks
+                #   (UP asks ascending [0.40,0.41,...] → 1-UP asks descending [0.60,0.59,...] ✓)
+                exit_depth = None
+                if book_valid:
+                    if at.direction == "UP" and top_bids_up:
+                        exit_depth = _walk_bids_for_exit(top_bids_up, at.shares)
+                    elif at.direction == "DOWN" and top_asks_up:
+                        down_bids = [(round(1 - p, 4), s) for p, s in top_asks_up]
+                        exit_depth = _walk_bids_for_exit(down_bids, at.shares)
+
+                if exit_depth and exit_depth["shares_sold"] > 0:
+                    sim_upnl = portfolio_stats["active_trade"].get("unrealized_pnl", 0)
+                    real_upnl = round(exit_depth["proceeds"] - at.bet_size, 4)
+                    portfolio_stats["active_trade"]["real_current_price"]  = exit_depth["avg_price"]
+                    portfolio_stats["active_trade"]["real_unrealized_pnl"] = real_upnl
+                    portfolio_stats["active_trade"]["spread_impact"]       = round(sim_upnl - real_upnl, 4)
+                    portfolio_stats["active_trade"]["exit_depth"]          = exit_depth
+                else:
+                    portfolio_stats["active_trade"]["real_current_price"]  = None
+                    portfolio_stats["active_trade"]["real_unrealized_pnl"] = None
+                    portfolio_stats["active_trade"]["spread_impact"]       = None
+                    portfolio_stats["active_trade"]["exit_depth"]          = None
+
                 portfolio_stats["active_trade"]["real_entry_cost"] = (
                     up_ask if at.direction == "UP" else down_ask
                 )

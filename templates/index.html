@@ -235,7 +235,7 @@
           <span>Shares: <span id="at-shares" class="text-white font-mono">—</span></span>
         </div>
 
-        <!-- P&L comparación simulado vs real -->
+        <!-- P&L comparación simulado vs real (depth) -->
         <div class="rounded p-2 mb-2" style="background:#080d1a;border:1px solid #1e2d4a">
           <div class="grid grid-cols-2 gap-2 mb-1">
             <div class="text-center">
@@ -244,9 +244,10 @@
               <div class="text-xs text-slate-500">precio: <span id="at-current" class="font-mono">—</span></div>
             </div>
             <div class="text-center rounded" style="background:#0f1a2a;padding:4px">
-              <div class="text-xs mb-0.5" style="color:var(--cyan)">P&L Real (bid) ★</div>
+              <div class="text-xs mb-0.5" style="color:var(--cyan)">P&L Real (depth) ★</div>
               <div class="font-bold text-sm" id="at-real-upnl">—</div>
-              <div class="text-xs text-slate-500">bid: <span id="at-real-current" class="font-mono">—</span></div>
+              <div class="text-xs text-slate-500">avg exit: <span id="at-real-current" class="font-mono">—</span></div>
+              <div class="text-xs mt-0.5" id="at-depth-fill" style="color:var(--yellow)"></div>
             </div>
           </div>
           <div class="flex justify-between text-xs pt-1" style="border-top:1px solid #1e2d4a">
@@ -634,17 +635,41 @@
       upnlEl.textContent = fmtPnl(at.unrealized_pnl);
       setColor(upnlEl, at.unrealized_pnl);
 
-      // Real (bid — lo que recibirías si vendieras ahora)
+      // Real (depth-walked — avg price walking the bid side for at.shares)
       const realUpnlEl = $('at-real-upnl');
-      realUpnlEl.textContent = fmtPnl(at.real_unrealized_pnl);
-      setColor(realUpnlEl, at.real_unrealized_pnl);
-      $('at-real-current').textContent = fmt(at.real_current_price, 4);
-
-      // Spread impact
-      const siEl = $('at-spread-impact');
-      const si = at.spread_impact || 0;
-      siEl.textContent = (si >= 0 ? '-$' : '+$') + Math.abs(si).toFixed(4);
-      siEl.style.color = si > 0 ? 'var(--red)' : 'var(--green)';
+      const depthFillEl = $('at-depth-fill');
+      if (at.real_unrealized_pnl !== null && at.real_unrealized_pnl !== undefined) {
+        realUpnlEl.textContent = fmtPnl(at.real_unrealized_pnl);
+        setColor(realUpnlEl, at.real_unrealized_pnl);
+        $('at-real-current').textContent = fmt(at.real_current_price, 4);
+        // Spread impact
+        const siEl = $('at-spread-impact');
+        const si = at.spread_impact || 0;
+        siEl.textContent = (si >= 0 ? '-$' : '+$') + Math.abs(si).toFixed(4);
+        siEl.style.color = si > 0 ? 'var(--red)' : 'var(--green)';
+        // Depth fill indicator
+        const d = at.exit_depth;
+        if (d) {
+          const fillPct = d.fill_pct || 0;
+          if (d.filled) {
+            depthFillEl.textContent = `✓ llenado 100% (${fmt(d.shares_sold,2)} shares)`;
+            depthFillEl.style.color = 'var(--green)';
+          } else {
+            depthFillEl.textContent = `⚠ ${fillPct.toFixed(1)}% llenado · falta ${fmt(d.unfilled,2)} shares`;
+            depthFillEl.style.color = 'var(--red)';
+          }
+        } else {
+          depthFillEl.textContent = '';
+        }
+      } else {
+        // Libro de órdenes unilateral — no se puede estimar precio real
+        realUpnlEl.textContent = '—';
+        realUpnlEl.style.color = '#64748b';
+        $('at-real-current').textContent = 'libro vacío';
+        $('at-spread-impact').textContent = '—';
+        $('at-spread-impact').style.color = '#64748b';
+        depthFillEl.textContent = '';
+      }
 
       // TP/SL progress bar
       const sl = at.sl_price || 0;
